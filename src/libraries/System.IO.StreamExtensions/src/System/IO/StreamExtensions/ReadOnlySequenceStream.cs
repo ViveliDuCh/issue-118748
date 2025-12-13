@@ -13,6 +13,8 @@ public sealed class ReadOnlySequenceStream : Stream
 {
     private ReadOnlySequence<byte> sequence;
     private SequencePosition position;
+    private long _positionPastEnd; // -1 if within bounds, or the actual position if past end
+    private bool _isDisposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ReadOnlySequenceStream"/> class over the specified <see cref="ReadOnlySequence{Byte}"/>.
@@ -20,54 +22,95 @@ public sealed class ReadOnlySequenceStream : Stream
     /// <param name="sequence">The <see cref="ReadOnlySequence{Byte}"/> to wrap.</param>
     public ReadOnlySequenceStream(ReadOnlySequence<byte> sequence)
     {
-        if (sequence.IsEmpty)
-        {
-            throw new ArgumentException("The sequence cannot be empty.", nameof(sequence));
-        }
         this.sequence = sequence;
         this.position = sequence.Start;
+        _positionPastEnd = -1;
+        _isDisposed = false;
     }
 
     /// <inheritdoc />
-    public override bool CanRead => true;
+    public override bool CanRead => !_isDisposed;
 
     /// <inheritdoc />
-    public override bool CanSeek => true;
+    public override bool CanSeek => !_isDisposed;
 
     /// <inheritdoc />
     public override bool CanWrite => false;
 
+    private void EnsureNotDisposed() => ObjectDisposedException.ThrowIf(_isDisposed, this);
+
     /// <inheritdoc />
-    public override long Length => sequence.Length;
+    public override long Length
+    {
+        get
+        {
+            EnsureNotDisposed();
+            return sequence.Length;
+        }
+    }
 
     /// <inheritdoc />
     public override long Position
     {
-        get => sequence.Slice(0, position).Length;
+        get
+        {
+            EnsureNotDisposed();
+            return _positionPastEnd >= 0 ? _positionPastEnd : sequence.Slice(sequence.Start, position).Length;
+        }
         set
         {
+            EnsureNotDisposed();
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            position = sequence.GetPosition(value, sequence.Start);
+
+            // Allow seeking past the end
+            if (value >= Length)
+            {
+                position = sequence.End;
+                _positionPastEnd = value;
+            }
+            else
+            {
+                position = sequence.GetPosition(value, sequence.Start);
+                _positionPastEnd = -1;
+            }
         }
     }
 
     /// <inheritdoc />
     public override int Read(Span<byte> buffer)
     {
+        EnsureNotDisposed();
+
+        if (_positionPastEnd >= 0)
+        {
+            return 0;
+        }
+
         ReadOnlySequence<byte> remaining = sequence.Slice(position);
-        ReadOnlySequence<byte> toCopy = remaining.Slice(0, Math.Min(buffer.Length, remaining.Length));
-        position = toCopy.End;
-        toCopy.CopyTo(buffer);
-        return (int)toCopy.Length;
+        int n = (int)Math.Min(remaining.Length, buffer.Length);
+        if (n <= 0)
+        {
+            return 0;
+        }
+
+        remaining.Slice(0, n).CopyTo(buffer);
+        position = sequence.GetPosition(n, position);
+        return n;
     }
 
     /// <inheritdoc />
     public override int Read(byte[] buffer, int offset, int count)
     {
+        EnsureNotDisposed();
+
         ArgumentNullException.ThrowIfNull(buffer);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        if (buffer.Length - offset < count) throw new ArgumentException("Invalid offset and length.");
+
+        if ((ulong)(uint)offset + (uint)count > (uint)buffer.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
         return Read(buffer.AsSpan(offset, count));
     }
@@ -80,37 +123,60 @@ public sealed class ReadOnlySequenceStream : Stream
     /// <returns>The new position within the stream.</returns>
     public override long Seek(long offset, SeekOrigin origin)
     {
-        SequencePosition relativeTo = origin switch
+        EnsureNotDisposed();
+
+        // Calculate absolute position
+        long currentPosition = _positionPastEnd >= 0 ? _positionPastEnd : sequence.Slice(sequence.Start, position).Length;
+        long absolutePosition = origin switch
         {
-            SeekOrigin.Begin => sequence.Start,
-            SeekOrigin.Current => position,
-            SeekOrigin.End => sequence.Start,
+            SeekOrigin.Begin => offset,
+            SeekOrigin.Current => currentPosition + offset,
+            SeekOrigin.End => Length + offset,
             _ => throw new ArgumentOutOfRangeException(nameof(origin))
         };
 
-        // SeekOrigin.End always converts to absolute
-        // by adding Length and using Start as reference
-        if (origin == SeekOrigin.End)
+        // Negative positions are invalid
+        if (absolutePosition < 0)
         {
-            offset += Length;
-            relativeTo = sequence.Start;
-        }
-        else if (origin == SeekOrigin.Current && offset < 0)
-        {
-            offset += Position;
-            relativeTo = sequence.Start;
+            throw new IOException("An attempt was made to move the position before the beginning of the stream.");
         }
 
-        position = sequence.GetPosition(offset, relativeTo);
-        return Position;
+        // Update position - seeking past end is allowed
+        if (absolutePosition >= Length)
+        {
+            position = sequence.End;
+            _positionPastEnd = absolutePosition;
+        }
+        else
+        {
+            position = sequence.GetPosition(absolutePosition, sequence.Start);
+            _positionPastEnd = -1;
+        }
+
+        return absolutePosition;
     }
 
     /// <inheritdoc />
-    public override void Flush() => throw new NotSupportedException();
+    public override void Flush(){ }
 
     /// <inheritdoc />
-    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void SetLength(long value)
+    {
+        EnsureNotDisposed();
+        throw new NotSupportedException();
+    }
 
     /// <inheritdoc />
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        EnsureNotDisposed();
+        throw new NotSupportedException();
+    }
+
+    /// <inheritdoc />
+    protected override void Dispose(bool disposing)
+    {
+        _isDisposed = true;
+        base.Dispose(disposing);
+    }
 }
