@@ -6,6 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="MemoryTStreamConformanceTests.cs" />
+    <Compile Include="ROMemoryStreamConformanceTests.cs" />
     <Compile Include="ROSequenceStreamConformanceTests.cs" />
     <Compile Include="StringStreamConformanceTests.cs" />
     <Compile Include="StringStreamTests.cs" />

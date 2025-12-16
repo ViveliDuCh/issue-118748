@@ -5,6 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="System\IO\StreamExtensions\ReadOnlyMemoryStream.cs" />
+    <Compile Include="System\IO\StreamExtensions\MemoryTStream.cs" />
     <Compile Include="System\IO\StreamExtensions\ReadOnlySequenceStream.cs" />
     <Compile Include="System\IO\StreamExtensions\StringStream.cs" />
   </ItemGroup>
